@@ -1,6 +1,5 @@
 // SBUS Configuration
-const int SBUS_RX_PIN = 12;
-const int SBUS_TX_PIN = 13;  // Not used, but required for SoftwareSerial
+// SBUS uses hardware Serial (D0=RX, D1=TX) - pins are fixed
 const int SBUS_DEADBAND = 10;  // ±10% deadband for stick centering
 
 // Maximum motor duty cycle [0 - 255]

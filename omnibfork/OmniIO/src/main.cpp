@@ -6,7 +6,6 @@ Amazingly the relationship of the wheel speeds of the robot to its overall speed
 Combining this with a gyroscope allows for a true field oriented drive-- where  joystick commands always will move the robot forwards relative to you, despite which way the robot is facing. For those of you willing to take on the challenge, this is a great hack to try!
 */
 #include <Arduino.h>
-#include <SoftwareSerial.h>
 #include "config.h"
 #include "sbus.h"
 #include "FrSkySBUS.h"
@@ -21,14 +20,14 @@ Combining this with a gyroscope allows for a true field oriented drive-- where  
 #define LIFT_DIR 3
 #define LIFT_PWM 4
 
+#define LED_PIN 13  // Built-in LED for status indication
+
 
 //>>>>>>>>>>>>>>>>>>>>>>>>>> KEY ROBOT VARIABLES <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 //SBUS Setup ----------------------------------------------------
-// SBUS setup using SoftwareSerial on pin D12
-// WARNING: SoftwareSerial may not work reliably at 100kbaud with SBUS
-// You will need an external signal inverter circuit for SBUS inverted signal
-SoftwareSerial sbusSerial(SBUS_RX_PIN, SBUS_TX_PIN);
-bfs::SbusRx sbus_rx(&sbusSerial);
+// SBUS uses hardware Serial (D0 = RX, D1 = TX) with inverted signal
+// IMPORTANT: Disconnect SBUS wire from D0 before uploading code!
+bfs::SbusRx sbus_rx(&Serial);
 SBUSManager rc;
 
 // Channel mapping
@@ -65,10 +64,10 @@ double tune = 1;
 // strafing timer variable for catching odd remote behavior
 unsigned long lastStrafe = 0;
 
-// Debug variables
-unsigned long lastDebugPrint = 0;
-unsigned long loopCount = 0;
-unsigned long sbusReadCount = 0;
+// Status LED variables
+unsigned long lastLedBlink = 0;
+bool ledState = false;
+unsigned long sbusLastReceived = 0;
 
 
 // pre-define FUNCTIONS ---------------------------------------------
@@ -80,19 +79,13 @@ void driveLift();
 
 // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> SETUP <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 void setup() {
-  Serial.begin(115200);
-  Serial.println("OMNIB V1.0.0 SBUS ..... (01/11/2026)");
-  Serial.println("WARNING: Using SoftwareSerial for SBUS - may not work!");
-  Serial.println("SBUS requires: 100kbaud, 8E2, inverted signal");
-  Serial.println("SoftwareSerial supports: up to ~57600 baud, 8N1, normal signal");
-  Serial.println("You need an external inverter circuit on pin D12");
-  Serial.println("");
-
-  // Initialize SBUS receiver on SoftwareSerial
+  // Initialize SBUS on hardware Serial (D0/D1)
+  // This configures Serial at 100kbaud, 8E2, inverted
   sbus_rx.Begin();
-  Serial.println("SBUS initialized on D12 (RX) / D13 (TX - unused)");
-  Serial.println("Waiting for SBUS data...");
-  Serial.println("");
+
+  // Setup status LED
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW);
 
   // Setup motor pins
   pinMode(M1_DIR, OUTPUT);
@@ -103,17 +96,23 @@ void setup() {
   pinMode(M3_PWM, OUTPUT);
   pinMode(LIFT_DIR, OUTPUT);
   pinMode(LIFT_PWM, OUTPUT);
+
+  // Blink LED rapidly 5 times to show startup
+  for (int i = 0; i < 5; i++) {
+    digitalWrite(LED_PIN, HIGH);
+    delay(100);
+    digitalWrite(LED_PIN, LOW);
+    delay(100);
+  }
 }
 
 
 
 // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> LOOP <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 void loop() {
-  loopCount++;
-
   // Read SBUS data
   if (sbus_rx.Read()) {
-    sbusReadCount++;
+    sbusLastReceived = millis();  // Track last successful read
     rc.update(sbus_rx.data());
 
     // Map SBUS channels to velocity vector
@@ -139,44 +138,23 @@ void loop() {
       vSpeed[1] = 0;
       vSpeed[2] = 0;
       liftControl = 0;
-      Serial.println("FAILSAFE: Signal lost!");
+      digitalWrite(LED_PIN, HIGH);  // Solid LED on failsafe
     }
-
-    // Debug output when we get data
-    Serial.print("SBUS OK! CH1-4: ");
-    Serial.print(forward_back); Serial.print(", ");
-    Serial.print(strafe); Serial.print(", ");
-    Serial.print(rotate); Serial.print(", ");
-    Serial.println(lift);
   }
 
-  // Debug heartbeat every 2 seconds
-  if (millis() - lastDebugPrint > 2000) {
-    lastDebugPrint = millis();
-    Serial.print("Loop: ");
-    Serial.print(loopCount);
-    Serial.print(" | SBUS packets: ");
-    Serial.print(sbusReadCount);
-    Serial.print(" | SoftwareSerial available: ");
-    int available = sbusSerial.available();
-    Serial.println(available);
+  // LED Status Indicator
+  // Fast blink (200ms): Receiving SBUS data (normal operation)
+  // Slow blink (1000ms): No SBUS data yet (waiting for connection)
+  // Solid ON: Failsafe active (handled above)
+  if (!(sbus_rx.data().failsafe || sbus_rx.data().lost_frame)) {
+    unsigned long timeSinceLastSbus = millis() - sbusLastReceived;
+    unsigned long blinkInterval = (timeSinceLastSbus < 500) ? 200 : 1000;
 
-    // Show raw bytes if any available (helps debug)
-    if (available > 0) {
-      Serial.print("  Raw bytes (HEX): ");
-      for (int i = 0; i < min(available, 25); i++) {
-        int b = sbusSerial.read();
-        if (b < 0x10) Serial.print("0");
-        Serial.print(b, HEX);
-        Serial.print(" ");
-      }
-      Serial.println();
-      Serial.println("  Expected SBUS: Header=0F, Footer=00 or 04, Length=25 bytes");
-      Serial.println("  If all bytes are F0 (inverted 0F), you need signal inverter!");
+    if (millis() - lastLedBlink > blinkInterval) {
+      lastLedBlink = millis();
+      ledState = !ledState;
+      digitalWrite(LED_PIN, ledState);
     }
-
-    loopCount = 0;
-    sbusReadCount = 0;
   }
 
   // Execute motor control
