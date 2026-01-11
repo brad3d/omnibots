@@ -6,16 +6,10 @@ Amazingly the relationship of the wheel speeds of the robot to its overall speed
 Combining this with a gyroscope allows for a true field oriented drive-- where  joystick commands always will move the robot forwards relative to you, despite which way the robot is facing. For those of you willing to take on the challenge, this is a great hack to try!
 */
 #include <Arduino.h>
+#include <SoftwareSerial.h>
 #include "config.h"
-
-#define RF_S1_V 19       // rf receiver signal pair 1, voltage
-#define RF_S1_G 18       // rf receiver signal pair 1, ground
-#define RF_S2_V 17
-#define RF_S2_G 16
-#define RF_S3_V 15
-#define RF_S3_G 14
-#define RF_S4_V 12
-#define RF_S4_G 11
+#include "sbus.h"
+#include "FrSkySBUS.h"
 
 #define M1_DIR 5
 #define M1_PWM 6
@@ -29,15 +23,23 @@ Combining this with a gyroscope allows for a true field oriented drive-- where  
 
 
 //>>>>>>>>>>>>>>>>>>>>>>>>>> KEY ROBOT VARIABLES <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
-//RF Commands ----------------------------------------------------
+//SBUS Setup ----------------------------------------------------
+// SBUS setup using SoftwareSerial on pin D12
+SoftwareSerial sbusSerial(SBUS_RX_PIN, SBUS_TX_PIN);
+bfs::SbusRx sbus_rx(&sbusSerial);
+SBUSManager rc;
+
+// Channel mapping
+#define CH_FORWARD_BACK  0  // Channel 1: Forward/Backward drive
+#define CH_STRAFE        1  // Channel 2: Left/Right strafe
+#define CH_ROTATE        2  // Channel 3: Rotate left/right
+#define CH_LIFT          3  // Channel 4: Lift up/down
+
+//Remote Commands ----------------------------------------------------
 // remote command: drive vector (in velocities) {v_x, v_y, omega}
 int vSpeed[3];
-// remote command: for forklift, -1 for lower, 0 for stay, 1 for move up
-int moveFork = 0;
-// stores the result of reciever message. 14 is default- dont move the motors.
-int lastCommand[4] = {14, 14, 14, 14};
-// robot will strafe when left/right is pressed and forward/back is held.
-bool strafeMode = false;
+// remote command: for forklift, continuous control -100 to +100
+int liftControl = 0;
 
 //Robot Physical Parameters -------------------------------------
 double angleWheel1 = 90.0;
@@ -63,7 +65,6 @@ unsigned long lastStrafe = 0;
 
 
 // pre-define FUNCTIONS ---------------------------------------------
-void getDirection();
 void moveBot();
 void getWheelSpeeds(float* wheelList);
 void driveWheels(float* speeds, float maxSpeed);
@@ -73,299 +74,61 @@ void driveLift();
 // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> SETUP <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 void setup() {
   Serial.begin(115200);
-  Serial.println("OMNIB V0.9.1 ..... (01/22/2025)");
-  pinMode(RF_S1_V, INPUT_PULLUP);
-  pinMode(RF_S1_G, INPUT_PULLUP);
-  pinMode(RF_S2_V, INPUT_PULLUP);
-  pinMode(RF_S2_G, INPUT_PULLUP);
-  pinMode(RF_S3_V, INPUT_PULLUP);
-  pinMode(RF_S3_G, INPUT_PULLUP);
-  pinMode(RF_S4_V, INPUT_PULLUP);
-  pinMode(RF_S4_G, INPUT_PULLUP);
+  Serial.println("OMNIB V1.0.0 SBUS ..... (01/11/2026)");
+
+  // Initialize SBUS receiver on SoftwareSerial
+  sbus_rx.Begin();
+
+  // Setup motor pins
+  pinMode(M1_DIR, OUTPUT);
+  pinMode(M1_PWM, OUTPUT);
+  pinMode(M2_DIR, OUTPUT);
+  pinMode(M2_PWM, OUTPUT);
+  pinMode(M3_DIR, OUTPUT);
+  pinMode(M3_PWM, OUTPUT);
+  pinMode(LIFT_DIR, OUTPUT);
+  pinMode(LIFT_PWM, OUTPUT);
 }
 
 
 
 // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> LOOP <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 void loop() {
-  getDirection();
+  // Read SBUS data
+  if (sbus_rx.Read()) {
+    rc.update(sbus_rx.data());
+
+    // Map SBUS channels to velocity vector
+    // Use toPercent() to get -100 to +100 range
+    int forward_back = rc[CH_FORWARD_BACK].toPercent();   // -100 to +100
+    int strafe = rc[CH_STRAFE].toPercent();                // -100 to +100
+    int rotate = rc[CH_ROTATE].toPercent();                // -100 to +100
+    int lift = rc[CH_LIFT].toPercent();                    // -100 to +100
+
+    // Convert to velocity vector (scale to ±maxSpeed range)
+    // Note: vSpeed values are normalized (-1 to +1) for kinematics, not PWM values
+    vSpeed[0] = strafe;        // X velocity (strafe left/right)
+    vSpeed[1] = forward_back;  // Y velocity (forward/back)
+    vSpeed[2] = rotate;        // Omega (rotation)
+
+    // Update lift control
+    liftControl = lift;
+
+    // Failsafe handling
+    if (sbus_rx.data().failsafe || sbus_rx.data().lost_frame) {
+      // Stop all motors on signal loss
+      vSpeed[0] = 0;
+      vSpeed[1] = 0;
+      vSpeed[2] = 0;
+      liftControl = 0;
+      Serial.println("FAILSAFE: Signal lost!");
+    }
+  }
+
+  // Execute motor control
   moveBot();
 }
 
-
-
-// >>>>>>>>>>>>>>>>>>>>> RADIO COMMAND PROCESSING <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
-// Read reciever input pins to decide what robot is going to do
-void getDirection(){
-  int command;
-
-  // inputs stores meaured RF controller states, inputArr stores processed data 
-  int inputArr[8];
-  int inputs[8] = {1, 1, 1, 1, 1, 1, 1, 1};
-
-  // create time variable
-  unsigned long t = millis();
-
-  // sample for 10ms for any pins going LOW. Deals with RF signal dropoouts.
-  while(millis() < (t + 10)){
-    if(digitalRead(RF_S1_G) == 0){
-      inputs[0] = 0;
-    }
-    if(digitalRead(RF_S1_V) == 0){
-      inputs[1] = 0;
-    }
-    if(digitalRead(RF_S2_G) == 0){
-      inputs[2] = 0;
-    }
-    if(digitalRead(RF_S2_V) == 0){
-      inputs[3] = 0;
-    }
-    if(digitalRead(RF_S3_G) == 0){
-      inputs[4] = 0;
-    }
-    if(digitalRead(RF_S3_V) == 0){
-      inputs[5] = 0;
-    }
-    if(digitalRead(RF_S4_G) == 0){
-      inputs[6] = 0;
-    }
-    if(digitalRead(RF_S4_V) == 0){
-      inputs[7] = 0;
-    }
-  }
-
-  inputArr[0] = inputs[0];
-  inputArr[1] = inputs[1];
-  inputArr[2] = inputs[2];
-  inputArr[3] = inputs[3];
-  inputArr[4] = inputs[4];
-  inputArr[5] = inputs[5];
-  inputArr[6] = inputs[6];
-  inputArr[7] = inputs[7];
-
-  
-  for(int i = 0; i < 8; i++){
-    Serial.print(inputArr[i]);
-    Serial.print(", ");
-  }
-  Serial.println();
-  
-  
-  // These sequence of inputs are read when button/ button combos are pressed
-  int F[8] = {1, 1, 0, 1, 1, 0, 1, 1};      // 1. forward
-  int B[8] = {1, 1, 1, 0, 0, 1, 1, 1};      // 2. back
-  int L[8] = {0, 1, 0, 1, 0, 1, 1, 1};      // 3. left
-  int R[8] = {1, 0, 1, 0, 1, 0, 1, 1};      // 4. right
-  int U[8] = {1, 1, 1, 1, 1, 1, 1, 0};      // 5. fork up
-  int D[8] = {1, 1, 1, 1, 1, 1, 0, 1};      // 6. fork down
-  int FL[8] = {0, 1, 0, 1, 1, 0, 1, 1};     // 7. forward + left
-  int FR[8] = {1, 0, 0, 1, 1, 0, 1, 1};     // 8. forward + right
-  int BL[8] = {0, 1, 1, 0, 0, 1, 1, 1};     // 9. back + left
-  int BR[8] = {1, 0, 1, 0, 0, 1, 1, 1};     // 10. back + right
-  int FU[8] = {1, 1, 0, 1, 1, 0, 1, 0};     // 11. forward + fork up
-  int FD[8] = {1, 1, 0, 1, 1, 0, 0, 1};     // 12. forward + fork down
-  int BU[8] = {1, 1, 1, 0, 0, 1, 1, 0};     // 13. back + fork up
-  int BD[8] = {1, 1, 1, 0, 0, 1, 0, 1};     // 14. back + fork down
-  int NONE[8] = {1, 1, 1, 1, 1, 1, 1, 1};   // 15. default, do nothing.
-
-
-
-  //create array that enumerates every command 
-  int cmdArr[15] = {0};
-
-  // We loop through all pin readings and compare the number of matches for each command. One of the commands will match all 8 pin outputs and that is what will get chosen as the transmitter's result. cmdArr ranks the match value.
-  // For example pressing the backwards button will generate a cmdArr =  {F = 0, B = 8, L = 4, R = 4, U = 4, D = 4, FL = 2, FR = 2, BL = 6, BR = 6, FU = 2, FD = 2, BU = 6, BD = 6, NONE = 4}. Thus backwards with a "match value" of 8 will be chosen.
-  for(int i = 0; i < 8; i++){
-    if(inputArr[i] == F[i]) cmdArr[0] += 1;
-    if(inputArr[i] == B[i]) cmdArr[1] += 1;
-    if(inputArr[i] == L[i]) cmdArr[2] += 1;
-    if(inputArr[i] == R[i]) cmdArr[3] += 1;
-    if(inputArr[i] == U[i]) cmdArr[4] += 1;
-    if(inputArr[i] == D[i]) cmdArr[5] += 1;
-    if(inputArr[i] == FL[i]) cmdArr[6] += 1;
-    if(inputArr[i] == FR[i]) cmdArr[7] += 1;
-    if(inputArr[i] == BL[i]) cmdArr[8] += 1;
-    if(inputArr[i] == BR[i]) cmdArr[9] += 1;
-    if(inputArr[i] == FU[i]) cmdArr[10] += 1;
-    if(inputArr[i] == FD[i]) cmdArr[11] += 1;
-    if(inputArr[i] == BU[i]) cmdArr[12] += 1;
-    if(inputArr[i] == BD[i]) cmdArr[13] += 1;
-    if(inputArr[i] == NONE[i]) cmdArr[14] += 1;
-  }
-
-  for(int i = 0; i < 15; i++){
-    if(cmdArr[i] == 8){
-      command = i;
-      break;
-    }
-  }
-  
-  // Assign speed vector values based on chosen command
-  switch(command){
-    case 0: //Forward
-      vSpeed[0] = 0;
-      vSpeed[1] = -1;
-      vSpeed[2] = 0;
-      moveFork = 0;
-      break;
-    case 1: //Back
-      vSpeed[0] = 0;
-      vSpeed[1] = 1;
-      vSpeed[2] = 0;
-      moveFork = 0;
-      break;
-    case 2: //Rotate Left (CCW)
-      vSpeed[0] = 0;
-      vSpeed[1] = 0;
-      vSpeed[2] = -1;
-      moveFork = 0;
-      break;
-    case 3: //Rotate Right (CW)
-      vSpeed[0] = 0;
-      vSpeed[1] = 0;
-      vSpeed[2] = 1;
-      moveFork = 0;
-      break;
-    case 4: //Fork Up
-      vSpeed[0] = 0;
-      vSpeed[1] = 0;
-      vSpeed[2] = 0;
-      moveFork = 1;
-      break;
-    case 5: //Fork Down
-      vSpeed[0] = 0;
-      vSpeed[1] = 0;
-      vSpeed[2] = 0;
-      moveFork = -1;
-      break;
-    case 6: //Forward + Left
-      vSpeed[0] = 1;
-      vSpeed[1] = -1;
-      vSpeed[2] = 0;
-      moveFork = 0;
-      break;
-    case 7: //Forward + Right
-      vSpeed[0] = -1;
-      vSpeed[1] = -1;
-      vSpeed[2] = 0;
-      moveFork = 0;
-      break;
-    case 8: //Back + Left
-      vSpeed[0] = 1;
-      vSpeed[1] = 1;
-      vSpeed[2] = 0;
-      moveFork = 0;
-      break;
-    case 9: //Back + Right
-      vSpeed[0] = -1;
-      vSpeed[1] = 1;
-      vSpeed[2] = 0;
-      moveFork = 0;
-      break;
-    case 10: //Forward + Fork Up
-      vSpeed[0] = 0;
-      vSpeed[1] = -1;
-      vSpeed[2] = 0;
-      moveFork = 1;
-      break;
-    case 11:  //Forward + Fork Down
-      vSpeed[0] = 0;
-      vSpeed[1] = -1;
-      vSpeed[2] = 0;
-      moveFork = -1;
-      break;
-    case 12: //Back + Fork Up
-      vSpeed[0] = 0;
-      vSpeed[1] = 1;
-      vSpeed[2] = 0;
-      moveFork = 1;
-      break;
-    case 13: //Back + Fork Down
-      vSpeed[0] = 0;
-      vSpeed[1] = 1;
-      vSpeed[2] = 0;
-      moveFork = -1;
-      break;
-    case 14: //None
-      vSpeed[0] = 0;
-      vSpeed[1] = 0;
-      vSpeed[2] = 0;
-      moveFork = 0;
-      break;
-    default:
-      break;
-  }
-
-  //Serial.println(command);
-
-  // Add strafing / slide drive logic. Robot will strafe sideways (crabwalk) if left or right is pressed while the forward/back button is being held down. Users can the let go of forward/back after strafing has started and the slide drive behavior will persist.
-
-  // first lets check that our command history contains initalizing strafe.
-  bool initStrafe = false;
-
-  for(int i = 0; i < 4; i++){
-    // if command is 6, 7, 8, or 9
-    if(lastCommand[i] > 5 && lastCommand[i] < 9){
-      initStrafe = true;
-      break;
-    }
-  }
-
-  // If strafe is initalized, user can let go of forward/back
-  if(initStrafe == true || strafeMode == true){
-    if(command == 2){ // Left
-      strafeMode = true;
-      vSpeed[0] = -1;
-      vSpeed[1] = 0;
-      vSpeed[2] = 0;
-      moveFork = 0;
-    } else if (command == 3){ // Right
-      strafeMode = true;
-      vSpeed[0] = 1;
-      vSpeed[1] = 0;
-      vSpeed[2] = 0;
-      moveFork = 0;
-    } else {  // Other commands not related to strafe
-      // check if this is a signal glitch, "debounces" radio commands
-      if (lastCommand[0] == command && lastCommand[1] == command){
-        strafeMode = false;
-      } else {
-        // do nothing
-      }
-    }
-  }
-  
-  // if strafemode is active, the left and right button will slide the robot instead of rotating it.
-  if(strafeMode){
-    if(command == 2){ // Left
-      vSpeed[0] = 1;
-      vSpeed[1] = 0;
-      vSpeed[2] = 0;
-      moveFork = 0;
-    } else if (command == 3){ // Right
-      vSpeed[0] = -1;
-      vSpeed[1] = 0;
-      vSpeed[2] = 0;
-      moveFork = 0;
-    }
-  }
-  
-  /*Serial.print("X: ");
-  Serial.print(vSpeed[0]);
-  Serial.print(", Y: ");
-  Serial.print(vSpeed[1]);
-  Serial.print(", Omega: ");
-  Serial.print(vSpeed[2]);
-  Serial.print(". Fork Movement: ");
-  Serial.println(moveFork);*/
-  
-  // shift the command history array down an element... 
-  lastCommand[3] = lastCommand[2];
-  lastCommand[2] = lastCommand[1];
-  lastCommand[1] = lastCommand[0];
-  // and save this excecuted command for next iteration
-  lastCommand[0] = command;
-}
 
 // >>>>>>>>>>>>>>>>>>>>>>>> ROBOT ACTION FUNCTIONS <<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 // prepare motors to coorinate bot movements
@@ -434,30 +197,31 @@ void driveWheels(float* speeds, float maxSpeed){
   analogWrite(M3_PWM, int(abs(wheelSpeeds[2])));
 }
 
-// Moves lift motor. full forward, full back, or stopped.
+// Moves lift motor with proportional speed control based on SBUS input
 void driveLift(){
-  if(flipM4){
-    if(moveFork > 0){
-      digitalWrite(LIFT_DIR, LOW);
-      analogWrite(LIFT_PWM, 255);
-    } else if(moveFork < 0){
-      digitalWrite(LIFT_DIR, HIGH);
-      analogWrite(LIFT_PWM, 255);
-    } else{
-      digitalWrite(LIFT_DIR, HIGH);
-      analogWrite(LIFT_PWM, 0);
+  if(abs(liftControl) > SBUS_DEADBAND) {  // Outside deadband
+    // Calculate proportional speed (map 10-100 to minimum speed to maxSpeed)
+    int speed = map(abs(liftControl), SBUS_DEADBAND, 100, 100, maxSpeed);
+
+    if(flipM4){
+      if(liftControl > 0){  // Lift up
+        digitalWrite(LIFT_DIR, LOW);
+        analogWrite(LIFT_PWM, speed);
+      } else {  // Lift down
+        digitalWrite(LIFT_DIR, HIGH);
+        analogWrite(LIFT_PWM, speed);
+      }
+    } else {
+      if(liftControl > 0){  // Lift up
+        digitalWrite(LIFT_DIR, HIGH);
+        analogWrite(LIFT_PWM, speed);
+      } else {  // Lift down
+        digitalWrite(LIFT_DIR, LOW);
+        analogWrite(LIFT_PWM, speed);
+      }
     }
-  } else {
-    if(moveFork > 0){
-      digitalWrite(LIFT_DIR, HIGH);
-      analogWrite(LIFT_PWM, 255);
-    } else if(moveFork < 0){
-      digitalWrite(LIFT_DIR, LOW);
-      analogWrite(LIFT_PWM, 255);
-    } else{
-      digitalWrite(LIFT_DIR, LOW);
-      analogWrite(LIFT_PWM, 0);
-    }
+  } else {  // Within deadband - stop motor
+    analogWrite(LIFT_PWM, 0);
   }
 }
 
