@@ -158,7 +158,23 @@ void loop() {
     Serial.print(" | SBUS packets: ");
     Serial.print(sbusReadCount);
     Serial.print(" | SoftwareSerial available: ");
-    Serial.println(sbusSerial.available());
+    int available = sbusSerial.available();
+    Serial.println(available);
+
+    // Show raw bytes if any available (helps debug)
+    if (available > 0) {
+      Serial.print("  Raw bytes (HEX): ");
+      for (int i = 0; i < min(available, 25); i++) {
+        int b = sbusSerial.read();
+        if (b < 0x10) Serial.print("0");
+        Serial.print(b, HEX);
+        Serial.print(" ");
+      }
+      Serial.println();
+      Serial.println("  Expected SBUS: Header=0F, Footer=00 or 04, Length=25 bytes");
+      Serial.println("  If all bytes are F0 (inverted 0F), you need signal inverter!");
+    }
+
     loopCount = 0;
     sbusReadCount = 0;
   }
