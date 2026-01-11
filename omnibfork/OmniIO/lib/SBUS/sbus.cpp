@@ -26,6 +26,7 @@
 #include "sbus.h"  // NOLINT
 #if defined(ARDUINO)
 #include <Arduino.h>
+#include <SoftwareSerial.h>
 #else
 #include <cstddef>
 #include <cstdint>
@@ -40,42 +41,60 @@ void SbusRx::Begin() {
   } else {
     baud_ = 100000;
   }
-  /* Start the bus */
-  /* Teensy 3.0 || Teensy 3.1/3.2 */
-  #if defined(__MK20DX128__) || defined(__MK20DX256__)
-  if (inv_) {
-    uart_->begin(baud_, SERIAL_8E1_RXINV_TXINV);
+
+  /* Check if using HardwareSerial or SoftwareSerial */
+  if (hw_uart_ != nullptr) {
+    /* Start the bus - HardwareSerial with proper SBUS format */
+    /* Teensy 3.0 || Teensy 3.1/3.2 */
+    #if defined(__MK20DX128__) || defined(__MK20DX256__)
+    if (inv_) {
+      hw_uart_->begin(baud_, SERIAL_8E1_RXINV_TXINV);
+    } else {
+      hw_uart_->begin(baud_, SERIAL_8E1);
+    }
+    /*
+    * Teensy 3.5 || Teensy 3.6 ||
+    * Teensy LC  || Teensy 4.0/4.1 ||
+    * Teensy 4.0 Beta
+    */
+    #elif defined(__MK64FX512__) || defined(__MK66FX1M0__) || \
+          defined(__MKL26Z64__)  || defined(__IMXRT1062__) || \
+          defined(__IMXRT1052__)
+    if (inv_){
+      hw_uart_->begin(baud_, SERIAL_8E2_RXINV_TXINV);
+    } else {
+      hw_uart_->begin(baud_, SERIAL_8E2);
+    }
+    /* STM32L4 */
+    #elif defined(STM32L496xx) || defined(STM32L476xx) || \
+          defined(STM32L433xx) || defined(STM32L432xx)
+    if (inv_) {
+      hw_uart_->begin(baud_, SERIAL_8E2 | 0xC000ul);
+    } else {
+      hw_uart_->begin(baud_, SERIAL_8E2);
+    }
+    /* ESP32 */
+    #elif defined(ESP32)
+    hw_uart_->begin(baud_, SERIAL_8E2, rxpin_, txpin_, inv_);
+    /* Everything else, with a hardware inverter */
+    #else
+    hw_uart_->begin(baud_, SERIAL_8E2);
+    #endif
   } else {
-    uart_->begin(baud_, SERIAL_8E1);
+    /* SoftwareSerial - limited functionality */
+    /* WARNING: SoftwareSerial does not support:
+     * - 8E2 format (will use 8N1 instead)
+     * - Signal inversion (requires external inverter)
+     * - Reliable operation at 100kbaud (may drop frames)
+     * Use at your own risk!
+     */
+    #if defined(ARDUINO)
+    // SoftwareSerial only supports begin(baud)
+    // We'll try 100000 but it may not work reliably
+    SoftwareSerial *sw_uart = static_cast<SoftwareSerial*>(uart_);
+    sw_uart->begin(baud_);
+    #endif
   }
-  /*
-  * Teensy 3.5 || Teensy 3.6 ||
-  * Teensy LC  || Teensy 4.0/4.1 ||
-  * Teensy 4.0 Beta
-  */
-  #elif defined(__MK64FX512__) || defined(__MK66FX1M0__) || \
-        defined(__MKL26Z64__)  || defined(__IMXRT1062__) || \
-        defined(__IMXRT1052__)
-  if (inv_){
-    uart_->begin(baud_, SERIAL_8E2_RXINV_TXINV);
-  } else {
-    uart_->begin(baud_, SERIAL_8E2);
-  }
-  /* STM32L4 */
-  #elif defined(STM32L496xx) || defined(STM32L476xx) || \
-        defined(STM32L433xx) || defined(STM32L432xx)
-  if (inv_) {
-    uart_->begin(baud_, SERIAL_8E2 | 0xC000ul);
-  } else {
-    uart_->begin(baud_, SERIAL_8E2);
-  }
-  /* ESP32 */
-  #elif defined(ESP32)
-  uart_->begin(baud_, SERIAL_8E2, rxpin_, txpin_, inv_);
-  /* Everything else, with a hardware inverter */
-  #else
-  uart_->begin(baud_, SERIAL_8E2);
-  #endif
   /* flush the bus */
   uart_->flush();
 }

@@ -48,25 +48,30 @@ class SbusRx {
  public:
   #if defined(ESP32)
   SbusRx(HardwareSerial *bus, const int8_t rxpin, const int8_t txpin,
-         const bool inv) : uart_(bus), inv_(inv), rxpin_(rxpin), txpin_(txpin)
+         const bool inv) : uart_(bus), hw_uart_(bus), inv_(inv), rxpin_(rxpin), txpin_(txpin)
          {}
   SbusRx(HardwareSerial *bus, const int8_t rxpin, const int8_t txpin,
-         const bool inv, const bool fast) : uart_(bus), inv_(inv), fast_(fast),
+         const bool inv, const bool fast) : uart_(bus), hw_uart_(bus), inv_(inv), fast_(fast),
                                             rxpin_(rxpin), txpin_(txpin) {}
   #else
-  explicit SbusRx(HardwareSerial *bus) : uart_(bus) {}
-  SbusRx(HardwareSerial *bus, const bool inv) : uart_(bus), inv_(inv) {}
+  explicit SbusRx(HardwareSerial *bus) : uart_(bus), hw_uart_(bus) {}
+  SbusRx(HardwareSerial *bus, const bool inv) : uart_(bus), hw_uart_(bus), inv_(inv) {}
   SbusRx(HardwareSerial *bus, const bool inv, const bool fast) : uart_(bus),
+                                                                 hw_uart_(bus),
                                                                  inv_(inv),
                                                                  fast_(fast) {}
+  /* Stream-based constructor for SoftwareSerial compatibility */
+  explicit SbusRx(Stream *bus) : uart_(bus), hw_uart_(nullptr) {}
+  SbusRx(Stream *bus, const bool inv) : uart_(bus), hw_uart_(nullptr), inv_(inv) {}
   #endif
   void Begin();
   bool Read();
-  inline SbusData data() const {return data_;}
+  inline const SbusData& data() const {return data_;}
 
  private:
   /* Communication */
-  HardwareSerial *uart_;
+  Stream *uart_;
+  HardwareSerial *hw_uart_;
   bool inv_ = true;
   bool fast_ = false;
   #if defined(ESP32)

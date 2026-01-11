@@ -25,6 +25,8 @@ Combining this with a gyroscope allows for a true field oriented drive-- where  
 //>>>>>>>>>>>>>>>>>>>>>>>>>> KEY ROBOT VARIABLES <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 //SBUS Setup ----------------------------------------------------
 // SBUS setup using SoftwareSerial on pin D12
+// WARNING: SoftwareSerial may not work reliably at 100kbaud with SBUS
+// You will need an external signal inverter circuit for SBUS inverted signal
 SoftwareSerial sbusSerial(SBUS_RX_PIN, SBUS_TX_PIN);
 bfs::SbusRx sbus_rx(&sbusSerial);
 SBUSManager rc;
@@ -63,6 +65,11 @@ double tune = 1;
 // strafing timer variable for catching odd remote behavior
 unsigned long lastStrafe = 0;
 
+// Debug variables
+unsigned long lastDebugPrint = 0;
+unsigned long loopCount = 0;
+unsigned long sbusReadCount = 0;
+
 
 // pre-define FUNCTIONS ---------------------------------------------
 void moveBot();
@@ -75,9 +82,17 @@ void driveLift();
 void setup() {
   Serial.begin(115200);
   Serial.println("OMNIB V1.0.0 SBUS ..... (01/11/2026)");
+  Serial.println("WARNING: Using SoftwareSerial for SBUS - may not work!");
+  Serial.println("SBUS requires: 100kbaud, 8E2, inverted signal");
+  Serial.println("SoftwareSerial supports: up to ~57600 baud, 8N1, normal signal");
+  Serial.println("You need an external inverter circuit on pin D12");
+  Serial.println("");
 
   // Initialize SBUS receiver on SoftwareSerial
   sbus_rx.Begin();
+  Serial.println("SBUS initialized on D12 (RX) / D13 (TX - unused)");
+  Serial.println("Waiting for SBUS data...");
+  Serial.println("");
 
   // Setup motor pins
   pinMode(M1_DIR, OUTPUT);
@@ -94,8 +109,11 @@ void setup() {
 
 // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> LOOP <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 void loop() {
+  loopCount++;
+
   // Read SBUS data
   if (sbus_rx.Read()) {
+    sbusReadCount++;
     rc.update(sbus_rx.data());
 
     // Map SBUS channels to velocity vector
@@ -123,6 +141,26 @@ void loop() {
       liftControl = 0;
       Serial.println("FAILSAFE: Signal lost!");
     }
+
+    // Debug output when we get data
+    Serial.print("SBUS OK! CH1-4: ");
+    Serial.print(forward_back); Serial.print(", ");
+    Serial.print(strafe); Serial.print(", ");
+    Serial.print(rotate); Serial.print(", ");
+    Serial.println(lift);
+  }
+
+  // Debug heartbeat every 2 seconds
+  if (millis() - lastDebugPrint > 2000) {
+    lastDebugPrint = millis();
+    Serial.print("Loop: ");
+    Serial.print(loopCount);
+    Serial.print(" | SBUS packets: ");
+    Serial.print(sbusReadCount);
+    Serial.print(" | SoftwareSerial available: ");
+    Serial.println(sbusSerial.available());
+    loopCount = 0;
+    sbusReadCount = 0;
   }
 
   // Execute motor control

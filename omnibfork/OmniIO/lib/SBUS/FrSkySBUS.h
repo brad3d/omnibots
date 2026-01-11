@@ -95,7 +95,7 @@ public:
    */
   static bool toSwitch(int sbusValue) {
     // 85% threshold: center + (max-center) * 0.85
-    const int threshold = SBUS_CENTER + ((SBUS_MAX - SBUS_CENTER) * 85 / 100);
+    const long threshold = SBUS_CENTER + ((long)(SBUS_MAX - SBUS_CENTER) * 85 / 100);
     return sbusValue >= threshold;
   }
 
@@ -265,7 +265,7 @@ public:
    * Call this once per loop after reading SBUS
    * @param data SBUS data frame from sbus_rx.data()
    */
-  void update(bfs::SbusData& data) {
+  void update(const bfs::SbusData& data) {
     for (int i = 0; i < data.NUM_CH; i++) {
       channels[i].update(data.ch[i]);
     }
