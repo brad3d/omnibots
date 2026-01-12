@@ -143,12 +143,22 @@ void loop() {
   }
 
   // LED Status Indicator
-  // Fast blink (200ms): Receiving SBUS data (normal operation)
-  // Slow blink (1000ms): No SBUS data yet (waiting for connection)
+  // Fast blink (200ms): Receiving valid SBUS data (normal operation)
+  // Very fast blink (100ms): Receiving bytes but not valid SBUS (likely inverted signal!)
+  // Slow blink (1000ms): No bytes at all (check connection)
   // Solid ON: Failsafe active (handled above)
   if (!(sbus_rx.data().failsafe || sbus_rx.data().lost_frame)) {
     unsigned long timeSinceLastSbus = millis() - sbusLastReceived;
-    unsigned long blinkInterval = (timeSinceLastSbus < 500) ? 200 : 1000;
+    unsigned long blinkInterval;
+
+    // Determine blink rate based on what we're receiving
+    if (timeSinceLastSbus < 500) {
+      blinkInterval = 200;  // Valid SBUS - fast blink
+    } else if (Serial.available() > 0) {
+      blinkInterval = 100;  // Receiving bytes but not valid SBUS - very fast blink (INVERTER NEEDED!)
+    } else {
+      blinkInterval = 1000;  // No bytes - slow blink
+    }
 
     if (millis() - lastLedBlink > blinkInterval) {
       lastLedBlink = millis();
